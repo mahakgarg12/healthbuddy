@@ -1,0 +1,8 @@
+<!-- Paste these lines inside android/app/src/main/AndroidManifest.xml -->
+
+<!-- inside the <manifest> tag, next to the other <uses-permission> lines: -->
+<uses-permission android:name="android.permission.ACTIVITY_RECOGNITION" />
+<uses-permission android:name="android.permission.PACKAGE_USAGE_STATS"
+    tools:ignore="ProtectedPermissions" />
+<!-- and make sure the <manifest> tag itself contains:
+     xmlns:tools="http://schemas.android.com/tools"                        -->
