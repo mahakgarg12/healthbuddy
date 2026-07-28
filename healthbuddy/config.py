@@ -6,7 +6,17 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 class Config:
     SECRET_KEY = os.environ.get("HB_SECRET_KEY", "dev-only-change-me")
+    # Local SQLite file — used automatically when HB_DATABASE_URL isn't set.
+    # Fine for `python run.py` on your own laptop. On a host with an
+    # ephemeral filesystem (e.g. Render's free tier) this file — and every
+    # account in it — gets wiped on every restart/redeploy/spin-down, so
+    # don't rely on it in production.
     DATABASE = os.environ.get("HB_DATABASE", os.path.join(BASE_DIR, "healthbuddy.db"))
+    # Postgres connection string (e.g. from Neon or Supabase's free tier).
+    # When set, the app uses Postgres instead of SQLite and data survives
+    # restarts/redeploys — set this in production. Example:
+    # postgresql://user:password@host/dbname?sslmode=require
+    DATABASE_URL = os.environ.get("HB_DATABASE_URL")
     JWT_ALGORITHM = "HS256"
     # Short-lived access token (sent on every request). Kept small on purpose —
     # if one leaks it's only useful for a short window.

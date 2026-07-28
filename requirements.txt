@@ -1,3 +1,4 @@
 Flask>=3.0
 PyJWT>=2.6
 gunicorn>=21.0   # production server
+psycopg[binary]>=3.1   # Postgres driver, used only when HB_DATABASE_URL is set

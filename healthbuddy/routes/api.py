@@ -130,7 +130,8 @@ def onboarding():
     bandit.seed_priors(g.user["id"], weights)
     xp = gamification.award_xp(g.user["id"], "onboarding") if first_time else 0
     if first_time:
-        execute("INSERT OR IGNORE INTO user_badges (user_id, badge_code) VALUES (?, 'first_steps')",
+        execute("INSERT INTO user_badges (user_id, badge_code) VALUES (?, 'first_steps') "
+                "ON CONFLICT (user_id, badge_code) DO NOTHING",
                 (g.user["id"],))
     return jsonify(weights=weights, xp_earned=xp, user=_public_user(g.user["id"]))
 
