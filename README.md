@@ -81,6 +81,25 @@ Type: Fredoka (display) + Nunito Sans (body). Accessibility: 44px+ touch targets
 visible focus rings, ARIA roles on progress/dialogs, `aria-live` toasts,
 `prefers-reduced-motion` respected.
 
+## Email delivery (password reset)
+
+Forgot-password sends a 6-digit code, single-use and scoped to the account,
+via SMTP. Without SMTP configured, the code is returned directly in the API
+response instead (dev-only fallback) so the flow still works without an
+inbox — set these to send real email:
+
+```bash
+HB_SMTP_HOST=smtp.gmail.com     # or your provider's SMTP relay
+HB_SMTP_PORT=587
+HB_SMTP_USER=you@gmail.com      # for SendGrid this is literally "apikey"
+HB_SMTP_PASS=your-app-password  # Gmail: generate an "App Password", not your login password
+HB_FROM_EMAIL=you@gmail.com     # optional, defaults to HB_SMTP_USER
+```
+
+Any STARTTLS-speaking provider works: Gmail, SendGrid, Mailgun, SES, Postmark,
+your own mail server. Set these as environment variables on Render (or
+wherever you deploy) — never commit real credentials to the repo.
+
 ## Known limits & next steps (in order)
 
 1. **Push delivery**: nudges are pulled in-app today. Wire Firebase Cloud Messaging:
@@ -88,7 +107,11 @@ visible focus rings, ARIA roles on progress/dialogs, `aria-live` toasts,
    `quiet_start/quiet_end`, and call `nudges.next_nudge()` server-side per user.
 2. **Postgres**: swap `db.py` for psycopg when the pilot outgrows SQLite; move
    `create_all`-style schema to Alembic migrations.
-3. **Rate limiting + email verification** before opening beyond the friend group.
+3. **Rate limiting** on auth endpoints before opening beyond the friend group (signup/
+   login/forgot-password aren't throttled per-IP yet). Sign-up email is validated
+   (format + live MX/DNS lookup, see `services/email_validate.py`) and password-reset
+   codes are emailed for real via SMTP (`services/mailer.py`) — still open: a
+   sign-up confirmation email to verify the person actually owns the mailbox.
 4. **Native app**: the API is client-agnostic — point a Flutter/React Native app at it.
 5. Leaderboard computes progress per member per request — fine for a pilot, cache it
    at a few hundred concurrent users.

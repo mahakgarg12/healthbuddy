@@ -3,18 +3,17 @@ and actionable (what happened + how to fix)."""
 import re
 from datetime import date
 
-from flask import Blueprint, g, jsonify, request
+from flask import Blueprint, current_app, g, jsonify, request
 
 from ..auth import (device_label_from_request, hash_password, issue_refresh_token,
                     issue_token, new_buddy_code, require_auth, revoke_refresh_token,
                     rotate_refresh_token, verify_password, verify_refresh_token)
 from ..config import CATEGORIES, CATEGORY_META
 from ..db import execute, query
-from ..services import bandit, gamification, nudges, segmentation, social
+from ..services import bandit, gamification, notify, nudges, push, scheduler, segmentation, social
+from ..services.email_validate import validate_email
 
 api = Blueprint("api", __name__, url_prefix="/api")
-
-EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 OCCUPATIONS = {"student", "professional", "other"}
 GENDERS = {"female", "male", "nonbinary", "prefer_not"}
 ACTIVITY = {"active", "moderate", "inactive"}
@@ -36,8 +35,9 @@ def register():
     password = data.get("password") or ""
     if not name:
         return jsonify(error="Add your name so we know what to call you."), 400
-    if not EMAIL_RE.match(email):
-        return jsonify(error="That email doesn't look right. Check it and try again."), 400
+    email_ok, email_err = validate_email(email)
+    if not email_ok:
+        return jsonify(error=email_err), 400
     if len(password) < 8:
         return jsonify(error="Password needs at least 8 characters."), 400
     if query("SELECT 1 FROM users WHERE email=?", (email,), one=True):
@@ -85,6 +85,56 @@ def logout():
     return jsonify(ok=True)
 
 
+@api.post("/auth/forgot-password")
+def forgot_password():
+    """Always answers with a generic success message when the email is
+    well-formed, regardless of whether an account exists for it, to avoid
+    leaking which emails are registered. The 6-digit code is emailed via
+    services/mailer.py; if no SMTP provider is configured (local/dev), it's
+    also returned in the response (Config.EXPOSE_RESET_TOKEN) so the flow
+    is testable without an inbox."""
+    from ..services import email as email_svc
+    from ..services.email_validate import validate_email
+    data = body()
+    email_addr = (data.get("email") or "").strip().lower()
+    email_ok, email_err = validate_email(email_addr)
+    if not email_ok:
+        return jsonify(error=email_err), 400
+    user = query("SELECT * FROM users WHERE email=?", (email_addr,), one=True)
+    generic = {"message": "If an account exists for that email, we've sent a 6-digit reset code."}
+    if user is None:
+        return jsonify(**generic)
+    code = email_svc.create_reset_code(user["id"])
+    sent = email_svc.send_password_reset(user["email"], code)
+    if not sent and current_app.config.get("EXPOSE_RESET_TOKEN"):
+        generic["dev_reset_code"] = code
+    return jsonify(**generic)
+
+
+@api.post("/auth/reset-password")
+def reset_password():
+    """Consumes a single-use 6-digit code (from /auth/forgot-password),
+    scoped to the account with the given email, to set a new password.
+    Also revokes every existing session, so a stolen device can't stay
+    signed in past a password reset."""
+    from ..services import email as email_svc
+    data = body()
+    email_addr = (data.get("email") or "").strip().lower()
+    code, new_password = (data.get("code") or "").strip(), data.get("password") or ""
+    if len(new_password) < 8:
+        return jsonify(error="Password must be at least 8 characters."), 400
+    user = query("SELECT * FROM users WHERE email=?", (email_addr,), one=True)
+    if user is None:
+        # Same generic failure as a wrong code - never confirm account existence.
+        return jsonify(error="That code is invalid or has expired. Request a new one."), 400
+    ok, err = email_svc.verify_reset_code(user["id"], code)
+    if not ok:
+        return jsonify(error=err), 400
+    execute("UPDATE users SET password_hash=? WHERE id=?", (hash_password(new_password), user["id"]))
+    execute("UPDATE sessions SET revoked_at=datetime('now') WHERE user_id=? AND revoked_at IS NULL", (user["id"],))
+    return jsonify(ok=True, message="Password updated. Please sign in again.")
+
+
 def _public_user(user_id):
     u = query("SELECT * FROM users WHERE id=?", (user_id,), one=True)
     return {"id": u["id"], "name": u["name"], "email": u["email"],
@@ -130,8 +180,7 @@ def onboarding():
     bandit.seed_priors(g.user["id"], weights)
     xp = gamification.award_xp(g.user["id"], "onboarding") if first_time else 0
     if first_time:
-        execute("INSERT INTO user_badges (user_id, badge_code) VALUES (?, 'first_steps') "
-                "ON CONFLICT (user_id, badge_code) DO NOTHING",
+        execute("INSERT OR IGNORE INTO user_badges (user_id, badge_code) VALUES (?, 'first_steps')",
                 (g.user["id"],))
     return jsonify(weights=weights, xp_earned=xp, user=_public_user(g.user["id"]))
 
@@ -322,3 +371,98 @@ def link_buddy():
 @require_auth
 def buddies():
     return jsonify(buddies=social.list_buddies(g.user["id"]), my_code=g.user["buddy_code"])
+
+
+# ---------- Push notifications (real phone push, works app-closed) ----------
+
+@api.get("/push/public-key")
+def push_public_key():
+    """No auth needed - this is not a secret, the frontend needs it before
+    the user even logs in isn't required here, but keeping it open avoids
+    a chicken-and-egg race with token timing on first load."""
+    key = current_app.config["VAPID_PUBLIC_KEY"]
+    if not key:
+        return jsonify(error="Push isn't configured on this server yet."), 503
+    return jsonify(public_key=key)
+
+
+@api.post("/push/subscribe")
+@require_auth
+def push_subscribe():
+    data = body()
+    sub = data.get("subscription")
+    if not sub or not sub.get("endpoint") or not sub.get("keys"):
+        return jsonify(error="Missing subscription details."), 400
+    push.save_subscription(g.user["id"], sub, request.headers.get("User-Agent"))
+    return jsonify(ok=True)
+
+
+@api.post("/push/unsubscribe")
+@require_auth
+def push_unsubscribe():
+    endpoint = body().get("endpoint")
+    if endpoint:
+        push.remove_subscription(endpoint)
+    return jsonify(ok=True)
+
+
+@api.post("/push/test")
+@require_auth
+def push_test():
+    """Manual trigger so you can confirm delivery works end-to-end (including
+    with the app fully closed) without waiting for the background worker."""
+    picks = notify.compose(g.user["id"], limit=1)
+    if not picks:
+        payload = {"title": "HealthBuddy", "body": "Test push - if you can see this, it's working! 🎉",
+                   "emoji": "✅", "url": "/#home"}
+    else:
+        p = picks[0]
+        payload = {"title": f"{p['emoji']} {p['title']}", "body": p["body"], "url": "/#nudges"}
+    sent = push.send_to_user(g.user["id"], payload)
+    if sent == 0:
+        return jsonify(error="No active subscription found - enable notifications first."), 404
+    return jsonify(ok=True, sent_to=sent)
+
+
+@api.post("/push/snooze")
+def push_snooze():
+    """'Remind in 1h' button on the system notification. No @require_auth -
+    a service worker has no JWT to attach - authenticity comes from the
+    HMAC signature embedded in the original push payload instead."""
+    data = body()
+    user_id, template_id, sig = data.get("user_id"), data.get("template_id"), data.get("sig")
+    if not push.verify_action(user_id, template_id, sig):
+        return jsonify(error="Invalid or expired action."), 403
+    notify.snooze(user_id, template_id, minutes=60)
+    return jsonify(ok=True)
+
+
+@api.post("/push/ack")
+def push_ack():
+    """'Done' button on the system notification - same auth approach as
+    /push/snooze. Awards a small XP nudge for responding directly from the
+    notification, without needing the app open."""
+    data = body()
+    user_id, template_id, sig = data.get("user_id"), data.get("template_id"), data.get("sig")
+    if not push.verify_action(user_id, template_id, sig):
+        return jsonify(error="Invalid or expired action."), 403
+    execute("INSERT INTO xp_events (user_id, amount, reason) VALUES (?,?,?)",
+            (user_id, 5, f"push_ack:{template_id}"))
+    return jsonify(ok=True)
+
+
+@api.post("/push/run-tick")
+def push_run_tick():
+    """Runs one scheduling pass (due slots + due snoozes) over HTTP, so a
+    free external cron pinger (cron-job.org, GitHub Actions schedule, etc)
+    can drive notifications without paying for a Render background worker.
+    Protected by a shared secret since it has no user session - set
+    HB_TICK_SECRET and pass it as ?token=... or the X-Tick-Token header."""
+    configured = current_app.config.get("TICK_SECRET")
+    if not configured:
+        return jsonify(error="HB_TICK_SECRET is not set on the server."), 503
+    supplied = request.args.get("token") or request.headers.get("X-Tick-Token")
+    if not supplied or supplied != configured:
+        return jsonify(error="Invalid token."), 403
+    result = scheduler.run_tick_once()
+    return jsonify(result)

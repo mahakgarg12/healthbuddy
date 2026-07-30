@@ -42,6 +42,19 @@ def create_app(overrides=None):
     def index():
         return render_template("index.html")
 
+    @app.get("/sw.js")
+    def service_worker():
+        """Served from the root (not /static/sw.js) so its default scope is
+        '/' and it can actually control the whole app - a service worker
+        registered from /static/ can only ever control pages under /static/,
+        which silently breaks navigator.serviceWorker.ready on every other
+        page. See templates/index.html for the matching registration."""
+        from flask import send_from_directory
+        response = send_from_directory(app.static_folder, "sw.js")
+        response.headers["Service-Worker-Allowed"] = "/"
+        response.headers["Cache-Control"] = "no-cache"  # always fetch the latest sw.js
+        return response
+
     @app.get("/health")
     def health():
         return {"status": "ok"}
