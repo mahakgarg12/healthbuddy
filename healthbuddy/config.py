@@ -1,10 +1,21 @@
 """Central configuration. Everything overridable via environment variables."""
 import os
+import time
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 class Config:
+    # Identifies exactly which deploy is running - shown at GET /api/version and
+    # used to cache-bust static assets (see templates/index.html), so "is my
+    # latest code actually live?" always has a definitive answer instead of
+    # guessing from browser behavior. Render sets RENDER_GIT_COMMIT automatically
+    # on every deploy; falls back to process-start time so it still changes on
+    # every restart even without that (e.g. running elsewhere, or locally).
+    APP_VERSION = (os.environ.get("RENDER_GIT_COMMIT", "")[:8]
+                   or os.environ.get("HB_APP_VERSION", "")
+                   or str(int(time.time())))
+
     SECRET_KEY = os.environ.get("HB_SECRET_KEY", "dev-only-change-me")
     DATABASE = os.environ.get("HB_DATABASE", os.path.join(BASE_DIR, "healthbuddy.db"))
     JWT_ALGORITHM = "HS256"
