@@ -52,7 +52,8 @@ def create_app(overrides=None):
         actually live (e.g. the OTP password reset)."""
         return {
             "version": Config.APP_VERSION,
-            "features": {"otp_password_reset": True, "email_domain_validation": True},
+            "features": {"otp_password_reset": True, "email_domain_validation": True,
+                         "signup_email_verification": True},
         }
 
     @app.get("/sw.js")

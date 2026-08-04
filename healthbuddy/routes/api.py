@@ -11,6 +11,7 @@ from ..auth import (device_label_from_request, hash_password, issue_refresh_toke
 from ..config import CATEGORIES, CATEGORY_META
 from ..db import execute, query
 from ..services import bandit, gamification, notify, nudges, push, scheduler, segmentation, social
+from ..services import email as email_svc
 from ..services.email_validate import validate_email
 
 api = Blueprint("api", __name__, url_prefix="/api")
@@ -43,11 +44,15 @@ def register():
     if query("SELECT 1 FROM users WHERE email=?", (email,), one=True):
         return jsonify(error="That email already has an account. Try signing in instead."), 409
     user_id = execute(
-        "INSERT INTO users (email, password_hash, name, buddy_code) VALUES (?,?,?,?)",
+        "INSERT INTO users (email, password_hash, name, buddy_code, email_verified) VALUES (?,?,?,?,0)",
         (email, hash_password(password), name, new_buddy_code()))
+    verify_code = email_svc.create_verification_code(user_id)
+    verify_sent = email_svc.send_verification_email(email, verify_code)
     refresh_token = issue_refresh_token(user_id, device_label_from_request())
-    return jsonify(token=issue_token(user_id), refresh_token=refresh_token,
-                   user=_public_user(user_id)), 201
+    resp = {"token": issue_token(user_id), "refresh_token": refresh_token, "user": _public_user(user_id)}
+    if not verify_sent and current_app.config.get("EXPOSE_RESET_TOKEN"):
+        resp["dev_verification_code"] = verify_code
+    return jsonify(**resp), 201
 
 
 @api.post("/auth/login")
@@ -93,8 +98,6 @@ def forgot_password():
     services/mailer.py; if no SMTP provider is configured (local/dev), it's
     also returned in the response (Config.EXPOSE_RESET_TOKEN) so the flow
     is testable without an inbox."""
-    from ..services import email as email_svc
-    from ..services.email_validate import validate_email
     data = body()
     email_addr = (data.get("email") or "").strip().lower()
     email_ok, email_err = validate_email(email_addr)
@@ -117,7 +120,6 @@ def reset_password():
     scoped to the account with the given email, to set a new password.
     Also revokes every existing session, so a stolen device can't stay
     signed in past a password reset."""
-    from ..services import email as email_svc
     data = body()
     email_addr = (data.get("email") or "").strip().lower()
     code, new_password = (data.get("code") or "").strip(), data.get("password") or ""
@@ -135,10 +137,50 @@ def reset_password():
     return jsonify(ok=True, message="Password updated. Please sign in again.")
 
 
+@api.post("/auth/verify-email")
+def verify_email():
+    """Consumes a single-use 6-digit code (emailed at sign-up, or via
+    /auth/resend-verification) to mark the account's email as verified.
+    Not behind @require_auth - the code itself, scoped to the account by
+    email, is proof enough, and someone verifying from a different device
+    than they signed up on shouldn't need to be logged in there too."""
+    data = body()
+    email_addr = (data.get("email") or "").strip().lower()
+    code = (data.get("code") or "").strip()
+    user = query("SELECT * FROM users WHERE email=?", (email_addr,), one=True)
+    if user is None:
+        return jsonify(error="That code is invalid or has expired. Request a new one."), 400
+    if user["email_verified"]:
+        return jsonify(ok=True, message="Your email is already verified.", user=_public_user(user["id"]))
+    ok, err = email_svc.verify_verification_code(user["id"], code)
+    if not ok:
+        return jsonify(error=err), 400
+    execute("UPDATE users SET email_verified=1 WHERE id=?", (user["id"],))
+    return jsonify(ok=True, message="Email verified — thanks!", user=_public_user(user["id"]))
+
+
+@api.post("/auth/resend-verification")
+@require_auth
+def resend_verification():
+    """Re-sends a fresh verification code to the logged-in user's own email.
+    Behind @require_auth (unlike forgot-password) since this is always
+    triggered from inside the app by someone already signed in, and there's
+    no account-enumeration concern to hide behind a generic response here."""
+    if g.user["email_verified"]:
+        return jsonify(ok=True, message="Your email is already verified.")
+    code = email_svc.create_verification_code(g.user["id"])
+    sent = email_svc.send_verification_email(g.user["email"], code)
+    resp = {"ok": True, "message": "Verification code sent."}
+    if not sent and current_app.config.get("EXPOSE_RESET_TOKEN"):
+        resp["dev_verification_code"] = code
+    return jsonify(**resp)
+
+
 def _public_user(user_id):
     u = query("SELECT * FROM users WHERE id=?", (user_id,), one=True)
     return {"id": u["id"], "name": u["name"], "email": u["email"],
             "buddy_code": u["buddy_code"], "onboarded": bool(u["onboarded"]),
+            "email_verified": bool(u["email_verified"]),
             "occupation": u["occupation"], "gender": u["gender"],
             "activity_level": u["activity_level"], "health_goal": u["health_goal"],
             "quiet_start": u["quiet_start"], "quiet_end": u["quiet_end"]}

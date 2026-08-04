@@ -397,6 +397,7 @@ function authForm(mode) {
       saveSession(data);
       go(data.user.onboarded ? "home" : "onboarding");
       if (data.user.onboarded) await maybePromptForPush();
+      if (isReg && !data.user.email_verified) emailVerifyFlow(data.dev_verification_code || "");
     } catch (e) { err.textContent = e.message; }
   };
   document.getElementById("f-forgot")?.addEventListener("click", () => forgotPasswordFlow());
@@ -468,6 +469,47 @@ function resetPasswordFlow(email, prefillCode) {
       }).then(({ res, data }) => { if (!res.ok) throw new Error(data.error || "Something went wrong."); return data; });
       toast("New code sent.");
       document.getElementById("rp-code").value = data.dev_reset_code || "";
+    } catch (e) { err.textContent = e.message; }
+  };
+}
+
+/* --- sign-up email verification: same shape as the reset flow above, but
+   proves the person can read mail at their address (not just that the
+   domain exists - see services/email_validate.py for that distinction).
+   Reachable both right after registering and later from the home banner. */
+function emailVerifyFlow(prefillCode) {
+  const email = state.user?.email || "";
+  modal(`<h2>Verify your email</h2>
+    ${prefillCode
+      ? `<p class="muted small">No email service is set up on this server yet, so here's your code directly.</p>`
+      : `<p class="muted small">We've sent a 6-digit code to ${esc(email)}.</p>`}
+    <div class="field"><label for="ev-code">6-digit code</label>
+      <input id="ev-code" value="${esc(prefillCode || "")}" inputmode="numeric" maxlength="6" autocomplete="one-time-code"
+        style="letter-spacing:6px;font-size:22px;font-weight:800;text-align:center"></div>
+    <p class="form-error" id="ev-err" role="alert"></p>
+    <button class="btn btn-primary btn-block section-gap" id="ev-submit">Verify</button>
+    <button class="btn btn-ghost btn-block" id="ev-resend">Resend code</button>
+    <button class="btn btn-ghost btn-block" data-close>Maybe later</button>`);
+  document.getElementById("ev-submit").onclick = async () => {
+    const err = document.getElementById("ev-err");
+    err.textContent = "";
+    try {
+      const data = await rawApi("/auth/verify-email", {
+        method: "POST", body: { email, code: document.getElementById("ev-code").value.trim() },
+      }).then(({ res, data }) => { if (!res.ok) throw new Error(data.error || "Something went wrong."); return data; });
+      if (data.user) state.user = data.user;
+      document.querySelector(".modal-backdrop")?.remove();
+      toast(data.message || "Email verified!");
+      if (location.hash === "#home" || !location.hash) views.home?.();
+    } catch (e) { err.textContent = e.message; }
+  };
+  document.getElementById("ev-resend").onclick = async () => {
+    const err = document.getElementById("ev-err");
+    err.textContent = "";
+    try {
+      const data = await api("/auth/resend-verification", { method: "POST" });
+      toast(data.message || "New code sent.");
+      if (data.dev_verification_code) document.getElementById("ev-code").value = data.dev_verification_code;
     } catch (e) { err.textContent = e.message; }
   };
 }
@@ -603,6 +645,12 @@ function renderHome(d) {
       <p class="muted">Level ${d.level} · ${d.xp} XP</p></div>
     </div>
 
+    ${state.user && !state.user.email_verified ? `
+    <button type="button" class="verify-banner" id="verify-banner">
+      <span>📧 Please verify your email to secure your account.</span>
+      <span class="verify-banner-cta">Verify now →</span>
+    </button>` : ""}
+
     <div class="buddy-stage">
       <button type="button" class="buddy-aura ${onFire ? "on-fire" : ""}" id="buddy-aura" aria-label="Your HealthBuddy — tap to say hi">
         ${logoImg(104, `buddy-avatar mood-${mood}`, "buddy-avatar-img")}
@@ -666,6 +714,7 @@ function renderHome(d) {
     img.classList.add("waving");
     toast(BUDDY_TAP_MESSAGES[Math.floor(Math.random() * BUDDY_TAP_MESSAGES.length)]);
   });
+  document.getElementById("verify-banner")?.addEventListener("click", () => emailVerifyFlow());
 }
 
 /* --- Today's Plan: ONE task at a time, with a countdown ---------------

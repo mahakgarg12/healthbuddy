@@ -179,6 +179,16 @@ CREATE TABLE IF NOT EXISTS password_resets (
     used_at TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_password_resets_user ON password_resets(user_id);
+CREATE TABLE IF NOT EXISTS email_verifications (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    token_hash TEXT NOT NULL,   -- sha256 of the raw 6-digit code; raw code never stored
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    expires_at TEXT NOT NULL,
+    used_at TEXT,
+    attempts INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_email_verifications_user ON email_verifications(user_id);
 CREATE TABLE IF NOT EXISTS game_scores (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id INTEGER NOT NULL REFERENCES users(id),
@@ -217,6 +227,11 @@ MIGRATIONS = [
     # OTP-style password reset: 6-digit code instead of a long pasted token,
     # with a per-code wrong-guess counter so a 6-digit space can't be brute-forced.
     ("password_resets", "attempts", "ALTER TABLE password_resets ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0"),
+    # Sign-up email verification. DEFAULT 1 here backfills every EXISTING user
+    # as verified (they already proved they could log in) — register() then
+    # explicitly inserts new signups with email_verified=0, so only accounts
+    # created from now on go through the new "verify your email" flow.
+    ("users", "email_verified", "ALTER TABLE users ADD COLUMN email_verified INTEGER NOT NULL DEFAULT 1"),
 ]
 
 

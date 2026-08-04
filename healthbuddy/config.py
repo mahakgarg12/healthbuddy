@@ -46,10 +46,21 @@ class Config:
     # 6-digit OTP style codes (not long tokens) so they're easy to type.
     RESET_TOKEN_EXPIRY_MINUTES = int(os.environ.get("HB_RESET_TOKEN_EXPIRY_MINUTES", "15"))
     RESET_CODE_MAX_ATTEMPTS = int(os.environ.get("HB_RESET_CODE_MAX_ATTEMPTS", "5"))
-    # If a real SMTP server is configured below, the reset code is emailed
-    # and never echoed back in the API response. If SMTP is NOT configured
-    # (e.g. local dev), the code is returned in the response so the flow is
-    # still testable end-to-end without an inbox - see routes/api.py.
+
+    # Sign-up email verification codes. Same OTP mechanics as password reset
+    # (see services/email.py) but its own table/expiry - proves whoever
+    # registered can actually read mail at that address, which the format +
+    # MX-record check in email_validate.py deliberately does NOT prove (that
+    # only confirms the domain exists, not that this person owns an inbox on
+    # it). Longer expiry than a reset code since there's no urgency to it.
+    VERIFY_CODE_EXPIRY_MINUTES = int(os.environ.get("HB_VERIFY_CODE_EXPIRY_MINUTES", "30"))
+    VERIFY_CODE_MAX_ATTEMPTS = int(os.environ.get("HB_VERIFY_CODE_MAX_ATTEMPTS", "5"))
+
+    # If a real SMTP server is configured below, reset/verification codes are
+    # emailed and never echoed back in the API response. If SMTP is NOT
+    # configured (e.g. local dev), the code is returned in the response so
+    # both flows are still testable end-to-end without an inbox - see
+    # routes/api.py.
     EXPOSE_RESET_TOKEN = os.environ.get("HB_EXPOSE_RESET_TOKEN", "1") == "1"
 
     # Outbound email (password reset codes, etc) via any SMTP+STARTTLS

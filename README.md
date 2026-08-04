@@ -83,10 +83,12 @@ visible focus rings, ARIA roles on progress/dialogs, `aria-live` toasts,
 
 ## Email delivery (password reset)
 
-Forgot-password sends a 6-digit code, single-use and scoped to the account,
-via SMTP. Without SMTP configured, the code is returned directly in the API
-response instead (dev-only fallback) so the flow still works without an
-inbox — set these to send real email:
+## Email delivery (password reset + sign-up verification)
+
+Both forgot-password and sign-up send a 6-digit code, single-use and scoped
+to the account, via SMTP. Without SMTP configured, the code is returned
+directly in the API response instead (dev-only fallback) so both flows still
+work without an inbox — set these to send real email:
 
 ```bash
 HB_SMTP_HOST=smtp.gmail.com     # or your provider's SMTP relay
@@ -100,6 +102,13 @@ Any STARTTLS-speaking provider works: Gmail, SendGrid, Mailgun, SES, Postmark,
 your own mail server. Set these as environment variables on Render (or
 wherever you deploy) — never commit real credentials to the repo.
 
+Sign-up now also verifies mailbox ownership, not just that the domain
+exists: a new account starts `email_verified=0`, gets emailed a code
+immediately, and shows a dismissible-but-persistent banner on the home
+screen until verified (`POST /auth/verify-email`, `POST
+/auth/resend-verification`). Existing users from before this change were
+backfilled as verified, so nobody already using the app gets nagged.
+
 ## Known limits & next steps (in order)
 
 1. **Push delivery**: nudges are pulled in-app today. Wire Firebase Cloud Messaging:
@@ -108,10 +117,10 @@ wherever you deploy) — never commit real credentials to the repo.
 2. **Postgres**: swap `db.py` for psycopg when the pilot outgrows SQLite; move
    `create_all`-style schema to Alembic migrations.
 3. **Rate limiting** on auth endpoints before opening beyond the friend group (signup/
-   login/forgot-password aren't throttled per-IP yet). Sign-up email is validated
-   (format + live MX/DNS lookup, see `services/email_validate.py`) and password-reset
-   codes are emailed for real via SMTP (`services/mailer.py`) — still open: a
-   sign-up confirmation email to verify the person actually owns the mailbox.
+   login/forgot-password aren't throttled per-IP yet — a person can request unlimited
+   OTP codes today, just not brute-force one once issued). Sign-up email is validated
+   (format + live MX/DNS lookup, see `services/email_validate.py`) and now confirmed
+   via a real emailed OTP too (`services/email.py`, `POST /auth/verify-email`).
 4. **Native app**: the API is client-agnostic — point a Flutter/React Native app at it.
 5. Leaderboard computes progress per member per request — fine for a pilot, cache it
    at a few hundred concurrent users.
